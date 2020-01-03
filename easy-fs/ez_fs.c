@@ -1,9 +1,12 @@
-#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/pagemap.h>
 #include <linux/mount.h>
+#include <linux/init.h>
+#include <linux/sched.h>
+#include <linux/cred.h>
 #include <linux/namei.h>
+// #include <asm/current.h>
 
 #define EZFS_MAGIC 0x64668735
 
@@ -13,13 +16,35 @@ static int ezfs_mount_count;
 static struct inode * ezfs_get_inode(struct super_block *sb, int mode, dev_t dev)
 {
     struct inode *inode = new_inode(sb);
+    // const struct cred * cred = current_cred();
 
     if (inode) {
         inode->i_mode = mode;
-        inode->i_uid = current->fsuid;
-        inode->i_gid = current->fsgid;
+        //inode->i_uid = cred->fsuid;
+        inode->i_uid = current_fsuid();
+        //inode->i_gid = cred->fsgid;
+        inode->i_gid = current_fsgid();
 
+        // inode->i_blksize = PAGE_CACHE_SIZE;
+        inode->i_blocks = 0;
+        inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+
+        switch (mode & S_IFMT){
+            default:
+                init_special_inode(inode, mode, dev);
+                break;
+            case S_IFREG:
+                printk("create a file \n");
+                break;
+            case S_IFDIR:
+                inode->i_op = &simple_dir_inode_operations;
+                inode->i_fop = &simple_dir_operations;
+                printk("create a dir file \n");
+                inode->i_nlink++;
+                break;
+        }
     }
+    return inode;
 }
 
 static int ezfs_mknod(struct inode *dir, struct dentry *dentry,
@@ -62,10 +87,10 @@ static int ezfs_fill_super(struct super_block *sb, void *data, int silent)
     return simple_fill_super(sb, EZFS_MAGIC, debug_files);
 }
 
-static struct super_block *ezfs_get_sb(struct file_system_type *fs_type,
-                        int flags, const char *dev_name, void *data)
+static int ezfs_get_sb(struct file_system_type *fs_type,
+                        int flags, const char *dev_name, void *data, struct vfsmount *mnt)
 {
-    return get_sb_single(fs_type, flags, data, ezfs_fill_super);
+    return get_sb_single(fs_type, flags, data, ezfs_fill_super, mnt);
 }
 
 static int ezfs_create_by_name(const char *name, mode_t mode,
@@ -75,7 +100,7 @@ static int ezfs_create_by_name(const char *name, mode_t mode,
     int error = 0;
 
     if (!parent) {
-        if (ezfs_mount & ezfs_mount->mnt_sb) {
+        if (ezfs_mount && ezfs_mount->mnt_sb) {
             parent = ezfs_mount->mnt_sb->s_root;
         }
     }
@@ -96,7 +121,7 @@ static int ezfs_create_by_name(const char *name, mode_t mode,
     else
         error = PTR_ERR(dentry);
 
-    mutex_unlock(&parent->d_iode->i_mutex);
+    mutex_unlock(&parent->d_inode->i_mutex);
 
     return error;
 }
@@ -118,7 +143,8 @@ struct dentry * ezfs_create_file(const char *name, mode_t mode,
 
     if (dentry->d_inode){
         if (data)
-            dentry->d_inode->u.generic_ip = data;
+            //dentry->d_inode->u.generic_ip = data;
+            dentry->d_inode->i_generation = (__u32) data;
         if (fops)
             dentry->d_inode->i_fop = fops;
     }
@@ -141,7 +167,7 @@ static struct file_system_type ez_fs_type = {
     .kill_sb = kill_litter_super,
 };
 
-int __init ez_fs_init(){
+int __init ez_fs_init(void){
     int retval;
     struct dentry *pslot;
 
@@ -169,7 +195,14 @@ int __init ez_fs_init(){
     return retval;
 }
 
-void __exit ez_fs_exit(){}
+void __exit ez_fs_exit(void){
+    simple_release_fs(&ezfs_mount, &ezfs_mount_count);
+    unregister_filesystem(&ez_fs_type);
+}
 
 module_init(ez_fs_init);
 module_exit(ez_fs_exit);
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("EZ FS");
+MODULE_VERSION("Ver 0.1");
+
